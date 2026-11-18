@@ -4,8 +4,6 @@ Reference implementation of **Quality-aware disentangled multimodal fusion with 
 
 QDMF-Net fuses whole-slide histopathology features with three molecular modalities (RNA-seq, copy-number variation, DNA methylation) for overall-survival prediction. Each modality is decomposed into a shared and a private subspace; the shared subspaces are aligned with a quality-weighted cross-modal contrastive objective; and a quality-aware gate assigns patient-specific fusion weights at inference time.
 
-Developed on 154 patients from TCGA-ESCA with patient-level stratified five-fold cross-validation repeated under three seeds (42, 123, 456). Reported out-of-fold C-index: 0.648 (95% CI 0.612–0.684).
-
 ## Repository structure
 
 ```
@@ -25,11 +23,7 @@ QDMF-Net/
 │   ├── fusion_head.py        # Cox head, auxiliary three-class head, multi-task loss
 │   ├── full_model.py         # QDMF-Net (DisentangledModel), the model used in the paper
 │   └── model.py              # baseline two-tower fusion model
-├── train.py                  # training / evaluation pipeline (baseline entry point)
-├── evaluate.py               # evaluation, C-index, KM plots
-├── test_dataset.py           # dataset smoke test
 ├── requirements.txt
-├── run.sh / run.bat
 └── LICENSE
 ```
 
@@ -41,7 +35,7 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-PyTorch with CUDA is required for training; the experiments reported in the paper used a single NVIDIA RTX 4090. Mixed precision is used for the convolutional omics encoder.
+PyTorch with CUDA is required for training. Mixed precision is used for the convolutional omics encoder.
 
 ## Data
 
@@ -55,20 +49,9 @@ Gene filtering (missingness, variance, univariate Cox screen to the top 1,000 ge
 
 `data/survival.csv` and `data/survival.tsv` contain only the de-identified sample-level survival fields needed to index the public cohort; no WSIs, molecular matrices, derived features or fold-level predictions are redistributed.
 
-## Quick start
+## Using the model
 
-```bash
-# 1. sanity check the dataset wiring
-python test_dataset.py
-
-# 2. train
-python train.py
-
-# 3. evaluate the latest run
-python evaluate.py
-```
-
-The paper model is `models.full_model.DisentangledModel`. It takes a patch-feature bag and an omics tensor and returns the Cox risk score, the auxiliary three-class logit and the per-modality quality indicators:
+The core model is `models.full_model.DisentangledModel`. It takes a patch-feature bag and an omics tensor and returns the Cox risk score, the auxiliary three-class logit and the per-modality quality indicators:
 
 ```python
 import torch
@@ -91,10 +74,6 @@ risk, risk_class, sigma_p, sigma_o = model(patch_features, omics_tensor)
 3. **Shared-private disentanglement** — each modality is projected into a 128-d shared and a 128-d private subspace; the absolute cosine similarity between the two is minimized. Private representations act as a training-time regularizer and do not enter prediction.
 4. **Quality-weighted cross-modal contrastive alignment** — bidirectional InfoNCE (temperature 0.07) between the shared representations of the same patient, with each pair weighted by the estimated modality quality.
 5. **Quality-aware adaptive fusion** — a learnable logit per modality is adjusted by `softplus(kappa) * log(sigma)`; a softmax over the two logits gives patient-specific weights, and the fused shared representation feeds the Cox head.
-
-## Output
-
-Training runs are written to `output/training_YYYYMMDD_HHMMSS/` (weights, `config.json`, training log, test predictions). Evaluation writes `output/evaluation_YYYYMMDD_HHMMSS/` with prediction tables, the C-index summary, Kaplan-Meier curves and risk-score distributions.
 
 ## Citation
 
