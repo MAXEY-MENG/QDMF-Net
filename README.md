@@ -50,8 +50,12 @@ Public TCGA-ESCA data from the Genomic Data Commons (https://gdc.cancer.gov/); r
 ```python
 from models.full_model import DisentangledModel
 
-model = DisentangledModel(path_input_dim=1024, omics_input_dim=17472)
-risk, risk_class, sigma_p, sigma_o = model(patch_features, omics_tensor)
+model = DisentangledModel()   # 512-d embeddings, 128-d shared/private subspaces
+# patch_features_list: list of (N_patches, 1024) tensors; omics_features: (batch, 17472, 3)
+outs = model(patch_features_list, omics_features)
+risk_score, risk_class = outs[0], outs[1]
+sigma_p, sigma_o = outs[6], outs[7]
+alpha_p, alpha_o = outs[8], outs[9]
 ```
 
 ## Citation
