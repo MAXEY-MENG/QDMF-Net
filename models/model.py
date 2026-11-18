@@ -14,7 +14,7 @@ from .fusion_head import FusionHead, MultiTaskLoss
 
 class MultiModalSurvivalModel(nn.Module):
     """
-    多模态生存预测模型
+    多模态生存预测base模型
     
     完整流程:
     1. 病理特征聚合: (N, 1024) -> (512)

@@ -14,9 +14,13 @@ class FusionHead(nn.Module):
     """
     融合与预测头
     
+    支持两种融合模式:
+    1. 'concat' (默认): 拼接两个模态的特征 (path_features, omics_features)
+    2. 'single': 输入单个融合后的特征向量 (z_fused)
+    
     输入:
-    - 病理特征: (batch_size, 512)
-    - 组学特征: (batch_size, 512)
+    - concat模式: 病理特征 (batch_size, 512) + 组学特征 (batch_size, 512)
+    - single模式: 融合特征 (batch_size, 256)
     
     输出:
     - 风险评分: (batch_size, 1) 用于Cox回归
@@ -25,21 +29,25 @@ class FusionHead(nn.Module):
     
     def __init__(
         self,
-        input_dim: int = 512,  # 每个模态的特征维度
+        input_dim: int = 512,  # 每个模态的特征维度 (concat模式) 或 融合特征维度 (single模式)
         hidden_dim: int = 256,
         fusion_dim: int = 128,
         dropout: float = 0.1,
-        num_classes: int = 3  # 风险等级数量
+        num_classes: int = 3,  # 风险等级数量
+        fusion_mode: str = "concat"  # "concat" 或 "single"
     ):
         """
         初始化融合头
         
         Args:
-            input_dim: 输入特征维度 (每个模态)
+            input_dim: 输入特征维度
+                       - concat模式: 每个模态的特征维度
+                       - single模式: 融合特征维度
             hidden_dim: 隐藏层维度
             fusion_dim: 融合特征维度
             dropout: Dropout概率
             num_classes: 风险等级数量
+            fusion_mode: 融合模式 ("concat" 或 "single")
         """
         super().__init__()
         
@@ -47,16 +55,32 @@ class FusionHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.fusion_dim = fusion_dim
         self.num_classes = num_classes
+        self.fusion_mode = fusion_mode
         
-        # 融合层: 拼接两个模态的特征
-        self.fusion_layer = nn.Sequential(
-            nn.Linear(input_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, fusion_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
+        if fusion_mode == "concat":
+            # 融合层: 拼接两个模态的特征
+            self.fusion_layer = nn.Sequential(
+                nn.Linear(input_dim * 2, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, fusion_dim),
+                nn.LayerNorm(fusion_dim)
+                # 无ReLU: 保留正负值，让后续head有完整的特征空间
+            )
+        elif fusion_mode == "single":
+            # 融合层: 单个特征向量
+            self.fusion_layer = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, fusion_dim),
+                nn.LayerNorm(fusion_dim)
+                # 无ReLU: 保留正负值
+            )
+        else:
+            raise ValueError(f"不支持的融合模式: {fusion_mode}。请使用 'concat' 或 'single'")
         
         # 回归头: 用于Cox风险评分
         self.regression_head = nn.Sequential(
@@ -86,21 +110,28 @@ class FusionHead(nn.Module):
     def forward(
         self,
         path_features: torch.Tensor,
-        omics_features: torch.Tensor
+        omics_features: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         前向传播
         
         Args:
-            path_features: 病理特征，形状 (batch_size, 512)
-            omics_features: 组学特征，形状 (batch_size, 512)
+            path_features: 
+                - concat模式: 病理特征，形状 (batch_size, input_dim)
+                - single模式: 融合特征，形状 (batch_size, input_dim)
+            omics_features:
+                - concat模式: 组学特征，形状 (batch_size, input_dim)
+                - single模式: 不需要，设为None
             
         Returns:
             risk_score: 风险评分，形状 (batch_size, 1)
             risk_class: 风险等级logits，形状 (batch_size, num_classes)
         """
-        # 拼接特征
-        fused = torch.cat([path_features, omics_features], dim=1)  # (batch, 1024)
+        if self.fusion_mode == "concat":
+            # 拼接特征
+            fused = torch.cat([path_features, omics_features], dim=1)  # (batch, 2*input_dim)
+        else:  # single
+            fused = path_features  # (batch, input_dim)
         
         # 融合层
         fused = self.fusion_layer(fused)  # (batch, fusion_dim)

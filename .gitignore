@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pth
+*.pt
+*.ckpt
+output/
+processed/
+path_features/
+.idea/
+.vscode/

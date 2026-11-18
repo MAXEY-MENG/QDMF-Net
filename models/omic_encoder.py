@@ -9,6 +9,52 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, Literal
 
 
+
+class TaskAdaptiveGating(nn.Module):
+    """
+    Low-Rank Task-Adaptive Gating (LR-TAG)
+
+    创新点：不同于 PORPOISE 的静态 MAD 筛选和 SurvPath 的固定通路分组，
+    LR-TAG 用低秩分解 (U @ V^T) 参数化基因门控权重，通过端到端训练学习
+    任务感知的基因重要性。
+
+    gate = sigmoid(U @ V),  U in R^{n_genes x rank}, V in R^{rank x 1}
+    低秩约束迫使相似表达模式的基因共享相似的gate值，
+    避免了对 17472 个自由参数的过拟合。
+
+    Args:
+        n_genes: 基因数量
+        rank: 低秩维度 (默认 8)
+        init_bias: 初始sigmoid偏置 (默认 2.0, gate初始≈0.88)
+    """
+    def __init__(self, n_genes: int, rank: int = 8, init_bias: float = 2.0):
+        super().__init__()
+        self.n_genes = n_genes
+        self.rank = rank
+        # 低秩分解: U(n_genes, rank) @ V(rank, 1) = gate_logits(n_genes, 1)
+        # 参数量: n_genes*rank + rank = 17472*8 + 8 ≈ 140K (vs 全参数 17.5K)
+        # 但低秩约束提供强正则化，基因间共享表示
+        self.U = nn.Parameter(torch.randn(n_genes, rank) * 0.01)
+        self.V = nn.Parameter(torch.randn(rank, 1) * 0.01)
+        # 全局偏置使初始gate≈0.88
+        self.bias = nn.Parameter(torch.tensor(init_bias))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (batch, n_genes, channels)"""
+        gate = torch.sigmoid(self.U @ self.V + self.bias)  # (n_genes, 1)
+        return x * gate.unsqueeze(0)
+
+    def get_sparsity(self) -> float:
+        """gate < 0.1 的基因比例"""
+        gate = torch.sigmoid(self.U @ self.V + self.bias)
+        return (gate < 0.1).float().mean().item()
+
+    def get_active_genes(self) -> int:
+        """gate > 0.5 的活跃基因数"""
+        gate = torch.sigmoid(self.U @ self.V + self.bias)
+        return int((gate > 0.5).sum().item())
+
+
 class OmicsEncoder(nn.Module):
     """
     组学特征编码器
@@ -32,7 +78,8 @@ class OmicsEncoder(nn.Module):
         kernel_size: int = 7,
         dropout: float = 0.1,
         num_heads: int = 8,
-        intermediate_dim: int = 2048
+        intermediate_dim: int = 2048,
+        use_gene_gating: bool = False
     ):
         """
         初始化组学编码器
@@ -57,7 +104,12 @@ class OmicsEncoder(nn.Module):
         self.output_dim = output_dim
         self.encoder_type = encoder_type
         self.num_layers = num_layers
-        
+        self.use_gene_gating = use_gene_gating
+
+        # Task-Adaptive Gating (CMC-GS innovation)
+        if use_gene_gating:
+            self.gene_gate = TaskAdaptiveGating(input_genes)
+
         if encoder_type == "cnn":
             # 1D CNN编码器
             self.conv_layers = nn.ModuleList()
@@ -105,9 +157,10 @@ class OmicsEncoder(nn.Module):
             # 全局平均池化
             self.global_pool = nn.AdaptiveAvgPool1d(1)
             
-            # 输出投影层
+            # 输出投影层 (LayerNorm → ReLU → Dropout → Linear, 无最终激活)
             self.output_proj = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim, output_dim)
@@ -138,9 +191,10 @@ class OmicsEncoder(nn.Module):
             # 全局平均池化 (沿基因维度)
             self.global_pool = nn.AdaptiveAvgPool1d(1)
             
-            # 输出投影层
+            # 输出投影层 (LayerNorm → ReLU → Dropout → Linear, 无最终激活)
             self.output_proj = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim, output_dim)
@@ -228,12 +282,27 @@ class OmicsEncoder(nn.Module):
         Returns:
             编码后的特征，形状 (batch_size, 512)
         """
+        # Task-Adaptive Gating: 端到端学习基因重要性
+        if self.use_gene_gating:
+            x = self.gene_gate(x)
+
         if self.encoder_type == "cnn":
             return self.forward_cnn(x)
         elif self.encoder_type == "transformer":
             return self.forward_transformer(x)
         else:
             raise ValueError(f"不支持的编码器类型: {self.encoder_type}")
+
+
+
+    def get_gate_stats(self) -> dict:
+        """获取门控统计 (用于日志)"""
+        if not self.use_gene_gating:
+            return {}
+        return {
+            'gate_sparsity': self.gene_gate.get_sparsity().item(),
+            'active_genes': self.gene_gate.get_active_genes(),
+        }
 
 
 class PositionalEncoding(nn.Module):

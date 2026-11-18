@@ -50,14 +50,13 @@ class PathologyAggregator(nn.Module):
         self.dropout = dropout
         
         if aggregation_mode == "mean":
-            # 平均池化 + MLP
+            # 平均池化 + MLP (加LayerNorm稳定训练，无输出激活保留正负特征)
             self.mlp = nn.Sequential(
                 nn.Linear(input_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_dim, output_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
+                nn.Linear(hidden_dim, output_dim)
             )
             
         elif aggregation_mode == "attention":
@@ -72,9 +71,8 @@ class PathologyAggregator(nn.Module):
                 nn.Linear(input_dim, hidden_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_dim, output_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
+                nn.Linear(hidden_dim, output_dim)
+                # 注意: 不添加最终激活函数，保留正负值信息
             )
             
             # 多头注意力版本 (可选)
